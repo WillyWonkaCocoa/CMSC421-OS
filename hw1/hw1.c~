@@ -1,0 +1,93 @@
+//File: hw1.c
+//Author: William Gao
+//Section: Jason Tang
+// CMSC421 OS - Fall 2017
+#include <stdio.h>
+#include <string.h>
+#include <stdio.h>
+#include <ctype.h>
+int chars_per_line = 100;
+// it is assumed a line will have 100 characters or less
+
+//compile using the followin flags:
+// gcc --std=c99 -Wall -O2 -o hw1 hw1.c
+
+int main(int argc, char *argv[]){
+  FILE *ioports;
+  FILE *iomem;
+  char tempString[chars_per_line];
+  char colon[] = ":";
+  if(argc <= 1){
+    printf("No device given.\n");
+  }else if(argc > 2){
+    printf("Multiple devices given.\n");
+  }else{
+    int num_in_ioports = 0;
+    int num_in_iomem = 0;
+    
+    char *stringToSearch = argv[1];
+    while(isspace((unsigned char)*stringToSearch)){
+      //look for leading whitespace
+      stringToSearch++;
+    }
+    
+    char *end = stringToSearch + strlen(stringToSearch) - 1;
+    while(end > stringToSearch && isspace((unsigned char)*end)){
+      //get rid of trailing whitespace
+      end--;
+    }
+    *(end+1) = 0; //assign null character
+    
+    ioports = fopen("/proc/ioports","r");
+    if(ioports){ //if ioports is opened successfully
+      printf("ioports:\n");
+      while(feof(ioports) == 0){	
+	if(fgets(tempString, chars_per_line, ioports) != NULL){
+	  if(strstr(tempString, stringToSearch) != NULL){
+	    num_in_ioports++;
+	    char *address = tempString;
+	    end = strstr(tempString, colon);
+	    (*end) = 0;
+
+	    //trim leading whitespaces
+	    while(isspace((unsigned char)*address)){
+	      address++;
+	    }
+	    printf("%s\n", address);
+	  }
+	}
+      }
+    }
+    if(num_in_ioports == 0){
+      printf("No matching entry found in /proc/ioports\n");
+    }
+    
+    
+    iomem = fopen("/proc/iomem", "r");
+    if(iomem){ //if iomem is opened successfully
+      printf("iomem:\n");
+      while(feof(iomem) == 0){
+	if(fgets(tempString, chars_per_line, iomem) != NULL ){
+	  if(strstr(tempString, stringToSearch) != NULL){
+	    num_in_iomem++;
+	    char *address = tempString;
+	    end = strstr(tempString, colon);
+	    (*end) = 0;
+
+	    //trim leading whitespaces
+	    while(isspace((unsigned char)*address)){
+	      address++;
+	    }
+       
+	    printf("%s\n", address);
+	  }
+	}
+      }
+    }
+    if(num_in_iomem == 0){
+	printf("No matching entry found in /proc/iomem\n");
+    } 
+  }
+  
+  return 0;
+}

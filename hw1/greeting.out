@@ -1,0 +1,10 @@
+[    0.000000] Linux version 4.12.10+ (willgao@willgao-VirtualBox) (gcc version 5.4.0 20160609 (Ubuntu 5.4.0-6ubuntu1~16.04.4) ) #2 SMP Tue Sep 5 17:06:12 EDT 2017
+[    0.000000] Hello this is willgao's kernel!
+[    0.000000] Command line: BOOT_IMAGE=/boot/vmlinuz-4.12.10+ root=UUID=71357384-a945-4600-8b54-dfbad8970a4b ro quiet splash
+[    0.000000] KERNEL supported cpus:
+[    0.000000]   Intel GenuineIntel
+[    0.000000]   AMD AuthenticAMD
+[    0.000000]   Centaur CentaurHauls
+[    0.000000] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.000000] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.000000] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'

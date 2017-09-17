@@ -1,0 +1,22 @@
+William Gao
+CMSC421 OS Fall 2017
+Jason Tang - Section
+
+What does /proc/interrupts do?
+  source: man7.org/linux/man-pages/man5/proc.5.html
+  This records "the number of interrupts per CPU per IO device."
+  Begninning in Linux 2.6.24 , this number also includes internal
+  system interrupts (i.e. not related to a device). Examples of
+  system interrupts that are counted include Nonmaskable interrupt,
+  Local Timer Interrupt, etc. Formatted in ASCII.
+
+  The file has several columns.  The first column on the left is a list of IRQs
+  (Interrupt Request Lines).  Then each CPU has its own column with the number
+  of interrupts per IRQ it received. The next column to the right contains the
+  type of interrupt, and the last column contains the name of the device that
+  is located at that IRQ.
+
+  The name of the new platform driver is "CS421 HW1".
+
+  The "CS421 HW1" driver is a IO-APIC-edge type interrupt assigned to IRQ 3.
+  IO-APIC-edge means the voltage signal transforms from low to high where the inerrupt occurs.
