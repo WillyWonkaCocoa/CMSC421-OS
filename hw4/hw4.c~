@@ -1,0 +1,419 @@
+/* File: hw4.c
+ * UMBC Email: wgao1@umbc.edu
+ * Author: William Gao
+ * This file contains a program that implements a memory allocator from scratch
+ * using a worst-fit allocation algorithm.
+ * The simulated machine has 12 page frame, each frame holds 32 bytes (384 bytes total)
+ */
+
+/*
+ * 1) How many bytes of overhead is consumbed by your memory allocation table? How did you determine that number?
+ *    I use an array of 12 (number of frames) MEM_FLAG structs. Each struct is 8 bytes: 
+ *  (bool = 1 byte, unsigned int = 4 bytes, and padding bytes for alignment)
+ *  Therefore the overhead consumbed by my memory allocation table is 12 * 8 = 96 bytes. I verified this with sizeof().
+ *
+ * 2) How does my_free() know it needs to raise the SEGFAULT signal when the passed in pointer points into the middle of a memory block?
+ *    I keep track of which frames are the start of a memory section returned by my_malloc or realloc(), 
+ *  When my_free() is called, I compare the pointer to each of the frame's address.  If the pointer 
+ *  passed in doesn't match any of the frames that are the start of memory sectons, a SEGFAULT is raised. 
+ *
+ */
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdbool.h>
+#include <errno.h>
+#include <signal.h>
+#include <string.h>
+#include <limits.h>
+#include <semaphore.h>
+#include <pthread.h>
+int num_of_threads = 100;
+extern void* hw4_test(void*);
+
+typedef struct MEM_FLAG {
+  bool free;
+  bool start_frame;
+  unsigned int num_of_frames;
+} MEM_FLAG;
+
+unsigned int NUM_OF_FRAMES = 12;
+unsigned int BYTES_PER_FRAME = 32;
+char TOTAL_MEM[384];
+MEM_FLAG TOTAL_FLAGS[12];
+sem_t lock;
+
+/**
+ * Write to standard output information about the current memory
+ * allocations.
+ */
+void my_malloc_stats(void);
+
+/** 
+ * Allocate and return a contiguous memory block that is within the
+ * memory region. The allocated memory remains uninitialized.
+ *
+ * @param size Number of bytes to allocate. If @c 0, your code may do
+ * whatever it wants; my_malloc() of @c 0 is "implementation defined",
+ * meaning it is up to you if you want to return @c NULL, segfault,
+ * whatever.
+ *
+ * @return Pointer to allocated memory, or @c NULL if no space could
+ * be found. If out of memory, set errno to @c ENOMEM.
+ */
+void *my_malloc(size_t size);
+
+/**
+ * Deallocate a memory region that was returned by my_malloc() or
+ * my_realloc().
+ *
+ * @param ptr Pointer to memory region to free. If @c NULL, do
+ * nothing.
+ */
+void my_free(void *ptr);
+
+/**
+ * Change the size of the memory block pointed to by @a ptr.
+ *
+ * @param ptr Pointer to memory region to reallocate.
+ * @param size Number of bytes to reallocate.
+ *
+ * @return If allocating a new memory block or if resizing a block,
+ * then pointer to allocated memory; @a ptr will become invalid. If
+ * freeing a memory region or if allocation fails, return @c NULL. If
+ * out of memory, set errno to @c ENOMEM.
+ */
+void *my_realloc(void *ptr, size_t size);
+
+/**
+ * Retrieve the size of an allocation block.
+ *
+ * @return Usable size pointed to by @a ptr, or 0 if @a ptr is not a
+ * pointer returned by my_malloc() or my_realloc() (such as @c NULL).
+ */
+size_t my_malloc_usable_size(void *ptr);
+
+int main(){
+  sem_init(&lock, 0, 1);
+
+  sem_wait(&lock);
+  //initialize "memory" to zero
+  for(unsigned int i = 0; i < NUM_OF_FRAMES * BYTES_PER_FRAME; i++){
+    TOTAL_MEM[i] = 0;
+  }
+  for(unsigned int i = 0; i < NUM_OF_FRAMES; i++){
+    TOTAL_FLAGS[i].free = true;
+    TOTAL_FLAGS[i].start_frame = false;
+    TOTAL_FLAGS[i].num_of_frames = 0;
+  }
+  sem_post(&lock);
+
+  pthread_t *group_of_threads = malloc(sizeof(pthread_t) * num_of_threads);
+  for(int i = 0; i < num_of_threads; i++){
+    pthread_create(group_of_threads+i, 0, hw4_test, NULL);
+  }
+
+  for(int i = 0; i < num_of_threads; i++){
+    pthread_join(*(group_of_threads + i), NULL);
+  }
+  
+  //hw4_test();
+  
+  return 0;
+}
+
+/**
+ * Display to standard output the following:
+ * - Memory contents, one frame per line, 12 lines total. Display the
+ *   actual bytes stored in memory. If the byte is unprintable (ASCII
+ *   value less than 32 or greater than 126), then display a dot
+ *   instead.
+ * - Current memory allocation table, one line of 12 columns. For each
+ *   column, display a 'f' if the frame is free, 'R' if reserved.
+ */
+void my_malloc_stats(void){
+  sem_wait(&lock);
+  fprintf(stdout, "Memory contents:\n");
+  for(unsigned int i = 0; i < NUM_OF_FRAMES; i++){
+    for(unsigned int j = 0; j < BYTES_PER_FRAME; j++){
+      if(j == 0){
+	fprintf(stdout, "  ");
+      }
+      
+      if(TOTAL_MEM[i*BYTES_PER_FRAME + j] > 32 &&
+	 TOTAL_MEM[i*BYTES_PER_FRAME + j] < 126){
+	fprintf(stdout, "%c", TOTAL_MEM[i*BYTES_PER_FRAME + j]);
+      }else{
+	fprintf(stdout, ".");
+      }
+    }
+    fprintf(stdout, "\n");
+  }
+
+  fprintf(stdout, "Memory allocations:\n");
+  fprintf(stdout, "  ");
+  for(unsigned int i = 0; i < NUM_OF_FRAMES; i++){
+    if(TOTAL_FLAGS[i].free){
+      fprintf(stdout, "f");
+    }else{
+      fprintf(stdout, "R");
+    }
+    if(i == NUM_OF_FRAMES - 1){
+      fprintf(stdout, "\n");
+    }
+  }
+  sem_post(&lock);
+}
+
+/**
+ * Worst-Fit Allocator
+ * Search through all of available for the largest free memory region,
+ * then return a pointer to the beginning of the region. If multiple
+ * regions are the largest, return a pointer to the region closest to
+ * address zero.
+ *
+ * The size of the returned block will be at least @a size bytes,
+ * rounded up to the next 32-byte increment.
+ */
+void *my_malloc(size_t size){
+  sem_wait(&lock);
+  //if size requested is zero
+  if(size == 0 || size > NUM_OF_FRAMES * BYTES_PER_FRAME){
+    sem_post(&lock);
+    return NULL;
+    
+  //if size is less than or equal to number of frames * bytes per frame
+  }else{
+    int largest_region_start = -1;
+    unsigned int largest_region_size = 0;
+    
+    int curr_region_start = -1;
+    unsigned int curr_region_size = 0;
+    
+    bool first = true;
+    //loop through frames to find largest free region
+    for(unsigned int i = 0; i < NUM_OF_FRAMES; i++){
+      if(TOTAL_FLAGS[i].free){
+	if(first){
+	  curr_region_start = i;
+	  curr_region_size = 1;
+	  first = false;
+	}else{
+	  curr_region_size++;
+	}
+	
+	//last frame of the memory region
+	if(i == NUM_OF_FRAMES - 1){
+	  if(curr_region_size > largest_region_size){
+	    largest_region_start = curr_region_start;
+	    largest_region_size = curr_region_size;
+	  }
+	}
+      }else{      
+	if(curr_region_size > largest_region_size){
+	  largest_region_start = curr_region_start;
+	  largest_region_size = curr_region_size;
+	}
+	first = true;
+	curr_region_size = 0;
+      }
+    }//end of looping through frames to find largest empty region
+
+    if(largest_region_size * BYTES_PER_FRAME >= size){
+      //check if region is big enough for size requested
+      //set flag struct array to appropriate values for all frames
+      //calculate and return pointer
+      TOTAL_FLAGS[largest_region_start].free = false;
+      TOTAL_FLAGS[largest_region_start].start_frame = true;
+
+      int numOfFrames = size / BYTES_PER_FRAME;
+      int remainderBytes = size % BYTES_PER_FRAME;
+
+      if(remainderBytes != 0){
+	numOfFrames++;
+      }
+      
+      TOTAL_FLAGS[largest_region_start].num_of_frames = numOfFrames;
+     
+      for(unsigned int i = largest_region_start+1;
+	  i < largest_region_start+numOfFrames; i++){
+	TOTAL_FLAGS[i].free = false;
+	TOTAL_FLAGS[i].start_frame = false;
+	TOTAL_FLAGS[i].num_of_frames = numOfFrames;
+      }
+      sem_post(&lock);
+      return &TOTAL_MEM[largest_region_start * BYTES_PER_FRAME];
+      
+    }else{
+      //no region big enough found  
+      errno = ENOMEM;
+      sem_post(&lock);
+      return NULL;
+    }
+   
+  } //end of checking if size is greater than 0 and less than max bytes available
+}
+
+/**
+ *
+ * If @a ptr is not a pointer returned by my_malloc() or my_realloc(),
+ * then raise a SIGSEGV signal to the calling thread. Likewise,
+ * calling my_free() on a previously freed region results in a
+ * SIGSEGV.
+ */
+void my_free(void *ptr){
+  sem_wait(&lock);
+  if(ptr != NULL){
+    bool ptr_in_range = false;
+    for(unsigned int i = 0; i < NUM_OF_FRAMES; i++){
+      if(&TOTAL_MEM[i*BYTES_PER_FRAME] == ptr){
+	ptr_in_range = true;
+	if(!TOTAL_FLAGS[i].start_frame || TOTAL_FLAGS[i].free){
+	  //address not returned by alloc() or have been freed
+	  sem_post(&lock);
+	  raise(SIGSEGV);
+	}else{
+	  //free corresponding frames;
+	  unsigned int frames_to_free = TOTAL_FLAGS[i].num_of_frames;
+
+	  for(unsigned int j = i; j < i + frames_to_free; j++ ){
+	    TOTAL_FLAGS[j].free = true;
+	    TOTAL_FLAGS[j].start_frame = false;
+	    TOTAL_FLAGS[j].num_of_frames = 0;
+	  }//end of for loop resetting flags
+	}//end of checking address is used by alloc & haven't been freed
+	break;
+      }//end of checking if pointer is equivalent
+    }
+
+    if(!ptr_in_range){
+      sem_post(&lock);
+      raise(SIGSEGV);
+    }
+    
+  }//end of checking if ptr is NULL
+  sem_post(&lock);
+}
+
+/**
+ * - If @a ptr is @c NULL, then treat this as if a call to
+ *   my_malloc() for the requested size.
+ * - Else if @a size is @c 0, then treat this as if a call to
+ *   my_free().
+ * - Else if @a ptr is not a pointer returned by my_malloc() or
+ *   my_realloc(), then send a SIGSEGV signal to the calling process.
+ *
+ * Otherwise reallocate @a ptr as follows:
+ *
+ * - If @a size is smaller than the previously allocated size, then
+ *   reduce the size of the memory block. Mark the excess memory as
+ *   available. Memory sizes are rounded up to the next 32-byte
+ *   increment.
+ * - If @a size is the same size as the previously allocated size,
+ *   then do nothing.
+ * - If @a size is greater than the previously allocated size, then
+ *   allocate a new contiguous block of at least @a size bytes,
+ *   rounded up to the next 32-byte increment. Copy the contents from
+ *   the old to the new block, then free the old block.
+ */
+void *my_realloc(void *ptr, size_t size){
+  if(ptr == NULL){
+    return my_malloc(size);
+  }else if(size == 0){
+    my_free(ptr);
+  }else{
+    sem_wait(&lock);
+    bool ptr_in_range = false;
+    
+    for(unsigned int i = 0; i < NUM_OF_FRAMES; i++){
+      if(&TOTAL_MEM[i*BYTES_PER_FRAME] == ptr){
+	ptr_in_range = true;
+	if(!TOTAL_FLAGS[i].start_frame || TOTAL_FLAGS[i].free){
+	  //address not returned by alloc() or have been freed
+	  sem_post(&lock);
+	  raise(SIGSEGV);
+	}else{
+	  int numOfFrames = size / BYTES_PER_FRAME;
+	  
+	  int remainderBytes = size % BYTES_PER_FRAME;
+	  
+	  if(remainderBytes != 0){
+	    numOfFrames++;
+	  }
+	  
+	  if(numOfFrames < TOTAL_FLAGS[i].num_of_frames){
+	    for(int j = i; j < i+TOTAL_FLAGS[i].num_of_frames; j++){
+	      
+	      if(j >= i+numOfFrames){
+		TOTAL_FLAGS[j].free = true;
+		TOTAL_FLAGS[j].start_frame = false;
+		TOTAL_FLAGS[j].num_of_frames = 0;
+	      }
+	    }
+	    TOTAL_FLAGS[i].num_of_frames = numOfFrames;
+	    sem_post(&lock);
+	    return &TOTAL_MEM[i * BYTES_PER_FRAME];
+	    
+	  }else if(numOfFrames > TOTAL_FLAGS[i].num_of_frames) {
+	    void *ptr = my_malloc(size);
+	    if(ptr != NULL){
+	      void *result =  memcpy(ptr, &TOTAL_MEM[i * BYTES_PER_FRAME],
+				     TOTAL_FLAGS[i].num_of_frames * BYTES_PER_FRAME);
+	      my_free(&TOTAL_MEM[i * BYTES_PER_FRAME]);
+	      sem_post(&lock);
+	      return result;
+	    }else{
+	      errno = ENOMEM;
+	      sem_post(&lock);
+	      return NULL;
+	    }
+	  }
+	}//end of checking address is used by alloc & haven't been freed
+	break;
+      }//end of checking if pointer is equivalent
+    }
+    
+    if(!ptr_in_range){
+      sem_post(&lock);
+      raise(SIGSEGV);
+    }
+  }
+  return NULL;
+}
+
+/**
+ *
+ * If @a ptr is a pointer returned by my_malloc() or my_realloc(),
+ * then return the size of the allocation block. Because my_malloc()
+ * and my_realloc() round up to the next 32-byte increment, the
+ * returned value may be larger than the originally requested amount.
+ */
+size_t my_malloc_usable_size(void *ptr){
+  if(ptr != NULL){
+    sem_wait(&lock);
+    bool ptr_in_range = false;
+
+    for(unsigned int i = 0; i < NUM_OF_FRAMES; i++){
+      if(&TOTAL_MEM[i*BYTES_PER_FRAME] == ptr){
+	ptr_in_range = true;
+	if(!TOTAL_FLAGS[i].start_frame || TOTAL_FLAGS[i].free){
+	  //address not returned by alloc() or have been freed
+	  sem_post(&lock);
+	  return 0;
+	}else{
+	  sem_post(&lock);
+	  return TOTAL_FLAGS[i].num_of_frames * BYTES_PER_FRAME;
+
+	}//end of checking address is used by alloc & haven't been freed
+	break;
+      }//end of checking if pointer is equivalent
+    }
+
+    if(!ptr_in_range){
+      sem_post(&lock);
+      return 0;
+    }
+    
+  }//end of checking if pointer is NULL  
+  
+  return 0;
+}

@@ -1,0 +1,249 @@
+/* File: hw3.c
+ * Author: William Gao
+ * Last Edited: 10-04-2017
+ *
+ * 1. While the main thread is displaying the current state of all children groups, 
+ there is [at least one] potential race condition. Describe a scenario that could trigger that race condition.
+   Another race condition that can occur is when the main thread prints out the status while candy is being added to the groups or when the group's current house location is being updated.
+    
+ * 2. How could your program prevent that race condition? No code necessary, just describe what you would do.
+   I would add sem_wait() and sem_post() around each time I print the status to make sure no other thread is accessing the group's data.
+ */
+
+
+/*
+ * Seeked help from: Brian Seipp, Hannah Kiesel, Rushmie Kulkarni
+ * Used below link to parse data file
+ * https://www.tutorialspoint.com/c_standard_library/c_function_strtok.htm
+ */
+#define _BSD_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <math.h>
+#include <pthread.h>
+#include <semaphore.h>
+FILE *trickData;
+char *space = " ";
+
+int max_char_per_line = 81;
+int num_of_houses = 10;
+int G; //number of groups
+int T; //number of seconds to run simulation
+int end_simulation = 0;
+
+typedef struct House {
+  int id;
+  int x;
+  int y;
+  int numOfCandy;  
+} House;
+
+typedef struct Group {
+  int id;
+  int startingHouse;
+  int currHouse;
+  int numOfKids;
+  int numOfCandy;
+} Group;
+
+House houses_in_neighborhood[10]; 
+Group *groups;
+sem_t *locks; //locks for houses
+
+void printStatus(); //prints current status
+int findClosestHouse(Group g); //find closest home with the most candy
+
+void *ChildGroupFunction(void *args){
+  Group *kid_group = (Group *)args;
+
+  while(!end_simulation){
+
+    int house_index = findClosestHouse(*kid_group);
+    if(house_index < 0){ 
+      fprintf(stderr, "out of bounds error\n");
+      exit(EXIT_FAILURE);
+    }
+    int distance = abs(houses_in_neighborhood[house_index].x - 
+			       houses_in_neighborhood[kid_group->currHouse].x) +
+	  abs(houses_in_neighborhood[house_index].y -
+	      houses_in_neighborhood[kid_group->currHouse].y);
+    
+    fprintf(stdout, "Group %d: from house %d to %d (travel time = %d ms)\n"
+	    ,kid_group->id, kid_group->currHouse, house_index, distance * 250);
+    usleep(250 * 1000 * distance); //travel to house
+    kid_group->currHouse = house_index;
+
+    sem_wait(&locks[house_index]); //check to see if any other thread is at house
+    if(houses_in_neighborhood[house_index].numOfCandy >= kid_group->numOfKids){
+      //if there's just enough or more candy
+      houses_in_neighborhood[house_index].numOfCandy -= kid_group->numOfKids;
+      kid_group->numOfCandy += kid_group->numOfKids;
+      
+    }else{
+      //if there's not enough candy
+      kid_group->numOfCandy += houses_in_neighborhood[house_index].numOfCandy;
+      houses_in_neighborhood[house_index].numOfCandy = 0;
+    }
+    
+    sem_post(&locks[house_index]);
+  }
+  return NULL;
+}
+
+void *neighborhoodFunction(void *args){
+  FILE* data = (FILE *)args;
+  char temp[max_char_per_line];
+  
+  while(!end_simulation){
+    usleep(250 * 1000);
+    if(fgets(temp, max_char_per_line, data)){
+      
+      int house_index = atoi(strtok(temp,space));
+      int num_of_candy = atoi(strtok(NULL, space));
+      fprintf(stdout, "Neighborhood: added %d to house %d\n", num_of_candy, house_index);
+      sem_wait(&locks[house_index]);
+      //check to see if there's another thread at the hosue
+      houses_in_neighborhood[house_index].numOfCandy += num_of_candy;
+      sem_post(&locks[house_index]);
+    }else{
+      end_simulation = 1;
+      return NULL;
+    }
+  }
+  
+  return NULL;
+}
+
+int main(int argc, char *argv[]){
+  if(argc == 3){
+    trickData = fopen(argv[1], "r");
+    if(trickData == NULL){
+      fprintf(stderr, "Can't open data file.\n");
+      exit(EXIT_FAILURE);
+    }else{
+      //Total number of groups
+      char temp[max_char_per_line];
+      T = atoi(argv[2]);
+      pthread_t *thread_of_groups;
+      pthread_t neighborhood;
+      if(fgets(temp, max_char_per_line, trickData)){
+	G = atoi(temp);
+	thread_of_groups = malloc(sizeof(pthread_t) * G);
+
+      }else{
+	fprintf(stderr, "Can't read line about number of groups from file.\n");
+	exit(EXIT_FAILURE);
+      }
+
+      locks = malloc(sizeof(sem_t)*num_of_houses);
+      //Get info for each of the 10 house
+      for(int i = 0; i < num_of_houses; i++){
+	if(fgets(temp, max_char_per_line, trickData)){
+	  int x = atoi(strtok(temp, space));
+	  int y = atoi(strtok(NULL, space));
+	  int initial_amount_of_candy = atoi(strtok(NULL, space));
+	  House h = {i, x, y, initial_amount_of_candy};
+	  
+	  houses_in_neighborhood[i] = h;
+	  sem_init(&locks[i], 0, 1); //leave house unlocked
+
+	}else{
+	  fprintf(stderr, "Can't read line about house %d from file.\n", i);
+	  exit(EXIT_FAILURE);
+	}
+      }
+      
+      groups = malloc(sizeof(Group) * G);
+      //Get info for each of the G groups
+      for(int i = 0; i < G; i++){
+	if(fgets(temp, max_char_per_line, trickData)){
+	  int startHouse = atoi(strtok(temp,space));
+	  int numOfKids = atoi(strtok(NULL, space));
+	  Group g = {i, startHouse, startHouse, numOfKids, 0};
+	  groups[i] = g;
+	  //spawn child group thread
+	  pthread_create(thread_of_groups + i, 0, ChildGroupFunction, &groups[i]);
+	}
+      }
+            
+      //spawn neighborhood thread
+      pthread_create(&neighborhood, 0, neighborhoodFunction, trickData);
+      
+      //Get remaining lines on how to refill candy
+      // House Number How Much Candy to Add
+      int current_time = 0;
+      while(current_time <= T){ //execute main thread for T seconds
+	fprintf(stdout, "After %d seconds:\n", current_time);
+	printStatus();
+	sleep(1);
+	current_time++;
+      }      
+
+      end_simulation = 1;
+      printStatus();
+      for(int i = 0; i < num_of_houses; i++){
+	sem_destroy(&locks[i]);
+      }
+
+      for(int i = 0; i < G; i++){
+	pthread_join(*(thread_of_groups + i), NULL);
+      }
+
+      
+    }//end of checking if file opened correctly
+    
+  }else{
+    fprintf(stderr, "Invalid number of arguments!\n");
+  }  
+}
+
+int findClosestHouse(Group g){
+  int first = 1; //flag for setting default value
+  int closest = -1;
+  int closest_distance = -1;
+
+  for(int i = 0; i < num_of_houses; i++){
+    int curr_index = g.currHouse;
+    if(i !=  g.startingHouse && i != g.currHouse){
+      if(first){
+	  closest = i;
+	  closest_distance = manhattan_distance; 
+	  first = 0;
+      }else{
+	if(houses_in_neighborhood[i].numOfCandy >= g.numOfKids){
+	  int manhattan_distance = abs(houses_in_neighborhood[curr_index].x - 
+				       houses_in_neighborhood[i].x) +
+	    abs(houses_in_neighborhood[curr_index].y -
+		houses_in_neighborhood[i].y);
+	  if(manhattan_distance < closest_distance){
+	    closest_distance = manhattan_distance;
+	    closest = i;
+	    first = 0;
+	  }// end of checking if distance is shorter
+	}//end of checking if there's enough candy for the group
+      }//end of checking if this is the first valid house
+    } //end of checking if house is starting or current house
+  }//end of for loop
+  
+  return closest;
+}
+
+void printStatus(){
+  fprintf(stdout, "  Group statuses:\n");
+  int totalCandy = 0;
+  for(int i = 0; i < G; i++){ //output child status
+    fprintf(stdout, "    %d:  size %d, going to %d, collected %d\n"
+	    ,i, groups[i].numOfKids, groups[i].currHouse, groups[i].numOfCandy);
+    totalCandy += groups[i].numOfCandy;
+  }
+  fprintf(stdout, "  House statuses:\n");
+  for(int i = 0; i < num_of_houses; i++){ //output house status
+    fprintf(stdout, "    %d @ (%d, %d): %d available\n",
+	    i, houses_in_neighborhood[i].x,
+	    houses_in_neighborhood[i].y, houses_in_neighborhood[i].numOfCandy);
+  }
+
+  fprintf(stdout, "  Total candy: %d\n", totalCandy);
+}
